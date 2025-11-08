@@ -9,6 +9,8 @@ Implements:
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
+import torch.nn.functional as F
+
 
 
 class CrossModalAttention(nn.Module):
@@ -52,6 +54,11 @@ class CrossModalAttention(nn.Module):
         self.scale = self.head_dim ** -0.5
         # Hint: Use nn.Linear for Q, K, V projections
         # Query from modality A, Key and Value from modality B
+    def _maybe_3d(self, x):
+        # Accept (B, D) or (B, T, D). If (B, D), treat T=1
+        if x.dim() == 2:  # (B, D)
+            return x.unsqueeze(1), True  # (B, 1, D), was_flat=True
+        return x, False 
         
     
     def forward(
@@ -86,7 +93,7 @@ class CrossModalAttention(nn.Module):
         attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, 1, 1)
         #   3. Apply mask if provided (set masked positions to -inf before softmax)
         if mask is not None:
-            attn = attn.masked_fill(mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1) == 0, float('-inf'))
+            attn = attn.masked_fill(~mask[:, None, None, :].bool(), float('-inf'))
         #   4. Apply softmax to get attention weights
         attn_weights = F.softmax(attn, dim=-1)
         #   5. Apply attention to values: attn_weights @ V

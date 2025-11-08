@@ -118,9 +118,9 @@ class SequenceEncoder(nn.Module):
             pooled = self.pool(x).squeeze(-1)  # (B, hidden_dim)
             return self.projection(pooled)
         elif self.encoder_type == 'transformer':
-            # Transformer: mean pool over seq
+            
             x = self.in_proj(sequence)
-            out = self.transformer(sequence)
+            out = self.transformer(x)
             pooled = out.mean(dim=1)  # (B, hidden_dim)
             return self.projection(pooled)
             
@@ -172,7 +172,7 @@ class FrameEncoder(nn.Module):
         # TODO: Add projection layer
         self.projection = nn.Linear(hidden_dim, output_dim)
         
-        raise NotImplementedError("Implement frame encoder")
+        
     
     def forward(
         self,
@@ -319,49 +319,38 @@ def build_encoder(
     output_dim: int,
     encoder_config: dict = None
 ) -> nn.Module:
-    """
-    Factory function to build appropriate encoder for each modality.
-    
-    Args:
-        modality: Modality name ('video', 'audio', 'imu', etc.)
-        input_dim: Input feature dimension
-        output_dim: Output embedding dimension
-        encoder_config: Optional config dict with encoder hyperparameters
-        
-    Returns:
-        Encoder module appropriate for the modality
-    """
     if encoder_config is None:
         encoder_config = {}
-    
-    # TODO: Implement encoder selection logic
-    # Example heuristics:
-    # - 'video' -> FrameEncoder
-    # - 'imu', 'audio', 'mocap' -> SequenceEncoder
-    # - Pre-extracted features -> SimpleMLPEncoder
-    
-    # Sanitize config to avoid duplicate kwargs
-    safe_cfg = {k: v for k, v in encoder_config.items() if k not in ['input_dim', 'output_dim', 'type', 'encoder_type']}
-    
+
+    # Drop problematic keys so we don't pass duplicates
+    safe_cfg = {k: v for k, v in encoder_config.items()
+                if k not in ['input_dim', 'output_dim', 'type']}
+
     if modality in ['video', 'frames']:
         return FrameEncoder(
             frame_dim=input_dim,
             output_dim=output_dim,
-            **encoder_config
+            **safe_cfg
         )
-    elif modality in ['imu', 'audio', 'mocap', 'accelerometer']:
+
+    # Treat PAMAP2 streams as sequences
+    if modality in ['imu', 'audio', 'mocap', 'accelerometer',
+                    'imu_hand', 'imu_chest', 'imu_ankle', 'heart_rate']:
+        enc_type = safe_cfg.pop('encoder_type', 'lstm')
         return SequenceEncoder(
             input_dim=input_dim,
             output_dim=output_dim,
-            **encoder_config
+            encoder_type=enc_type,
+            **safe_cfg
         )
-    else:
-        # Default to MLP for unknown modalities
-        return SimpleMLPEncoder(
-            input_dim=input_dim,
-            output_dim=output_dim,
-            **encoder_config
-        )
+
+    # Fallback
+    return SimpleMLPEncoder(
+        input_dim=input_dim,
+        output_dim=output_dim,
+        **safe_cfg
+    )
+
 
 
 if __name__ == '__main__':

@@ -261,7 +261,7 @@ def main(config: DictConfig):
         data_dir=config.dataset.data_dir,
         modalities=config.dataset.modalities,
         batch_size=config.dataset.batch_size,
-        num_workers=config.dataset.num_workers,
+        num_workers=2,
         modality_dropout=config.training.augmentation.modality_dropout
     )
     
@@ -312,7 +312,8 @@ def main(config: DictConfig):
         log_every_n_steps=config.experiment.log_every_n_steps,
         gradient_clip_val=config.training.gradient_clip_norm,
         deterministic=True,
-        enable_progress_bar=True
+        enable_progress_bar=True,
+        num_sanity_val_steps=0,
     )
     
     # Train

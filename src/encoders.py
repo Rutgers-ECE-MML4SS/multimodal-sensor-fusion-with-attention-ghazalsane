@@ -10,7 +10,7 @@ Implements lightweight encoders suitable for CPU training:
 import torch
 import torch.nn as nn
 from typing import Optional
-import torch.nn.functional as F
+import torch.nn.functional as F 
 
 
 
@@ -336,11 +336,14 @@ def build_encoder(
 ) -> nn.Module:
     cfg = _to_plain_dict(encoder_config)
     mod = str(modality).strip().lower()
+
+    # strip dup/forbidden keys
     for k in ("input_dim", "output_dim", "type", "frame_dim"):
-        if k in cfg:
-            cfg.pop(k)
+        cfg.pop(k, None)
+
     if mod in ("video", "frames"):
         return FrameEncoder(frame_dim=input_dim, output_dim=output_dim, **cfg)
+
     if mod in (
         "imu", "audio", "mocap", "accelerometer",
         "imu_hand", "imu_chest", "imu_ankle", "heart_rate"
@@ -348,7 +351,14 @@ def build_encoder(
         enc_type = cfg.pop("encoder_type", "lstm")
         return SequenceEncoder(input_dim=input_dim, output_dim=output_dim,
                                encoder_type=enc_type, **cfg)
-        return SimpleMLPEncoder(input_dim=input_dim, output_dim=output_dim, **cfg)
+
+    # Robust default: treat unknown PAMAP2-like streams as sequences
+    enc_type = cfg.pop("encoder_type", "lstm")
+    return SequenceEncoder(input_dim=input_dim, output_dim=output_dim,
+                           encoder_type=enc_type, **cfg)
+    # If you truly want MLP for unknowns, swap the two lines above with:
+    # return SimpleMLPEncoder(input_dim=input_dim, output_dim=output_dim, **cfg)
+
 
 
     

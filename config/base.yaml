@@ -9,6 +9,8 @@ dataset:
   modalities: [imu_hand, imu_chest, imu_ankle, heart_rate]  # For pamap2
                                                               # For mhad: [video, imu]
                                                               # For cooking: [video, audio]
+  num_classes: 18
+  
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15

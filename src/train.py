@@ -56,6 +56,11 @@ class MultimodalFusionModule(pl.LightningModule):
         
         # Build fusion model
         # TODO: Students need to ensure their fusion implementation works here
+        # ---- num_classes comes from config.model.num_classes (set in main) ----
+        num_classes = getattr(config.model, "num_classes", None)
+        if num_classes is None:
+            # final fallback to avoid crashes
+            num_classes = 11
         self.fusion_model = build_fusion_model(
             fusion_type=config.model.fusion_type,
             modality_dims=modality_output_dims,
@@ -68,9 +73,7 @@ class MultimodalFusionModule(pl.LightningModule):
         # Loss function
         self.criterion = nn.CrossEntropyLoss()
         
-        # Metrics storage
-        self.train_metrics = []
-        self.val_metrics = []
+        
     
     def forward(self, features, mask=None):
         """
@@ -92,15 +95,12 @@ class MultimodalFusionModule(pl.LightningModule):
         # Fusion
         # TODO: Students ensure their fusion model returns correct format
         # For late fusion, may return tuple (logits, per_modality_logits)
+        # Fusion (late fusion may return (logits, per_modality_logits))
         output = self.fusion_model(encoded_features, mask)
-        
-        # Handle different fusion output formats
-        if isinstance(output, tuple):
-            logits = output[0]  # Late fusion returns (fused_logits, per_modality_logits)
-        else:
-            logits = output
-        
+        logits = output[0] if isinstance(output, tuple) else output
         return logits
+        
+        
     
     def training_step(self, batch, batch_idx):
         """Training step for one batch."""
@@ -108,6 +108,15 @@ class MultimodalFusionModule(pl.LightningModule):
         
         # Forward pass
         logits = self(features, mask)
+
+        # --- tiny sanity check to surface label/num_classes mismatch early ---
+        with torch.no_grad():
+            nc = logits.size(-1)
+            # (guard against empty batches)
+            if labels.numel() > 0:
+                assert labels.min().item() >= 0 and labels.max().item() < nc, \
+                    f"Label range [{int(labels.min())},{int(labels.max())}] " \
+                    f"exceeds num_classes={nc}"
         
         # Compute loss
         loss = self.criterion(logits, labels)
@@ -221,6 +230,8 @@ class MultimodalFusionModule(pl.LightningModule):
             }
         else:
             return optimizer
+
+
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="base")

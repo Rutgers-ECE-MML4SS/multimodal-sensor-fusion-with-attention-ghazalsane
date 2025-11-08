@@ -325,8 +325,10 @@ def build_encoder(
     # Drop problematic keys so we don't pass duplicates
     safe_cfg = {k: v for k, v in encoder_config.items()
                 if k not in ['input_dim', 'output_dim', 'type']}
+    print(f"DEBUG build_encoder: modality='{modality}', input_dim={input_dim}, encoder_config={encoder_config}, safe_cfg keys={list(safe_cfg.keys())}")
 
     if modality in ['video', 'frames']:
+        print(f"DEBUG: Using FrameEncoder for {modality}")
         return FrameEncoder(
             frame_dim=input_dim,
             output_dim=output_dim,
@@ -337,6 +339,7 @@ def build_encoder(
     if modality in ['imu', 'audio', 'mocap', 'accelerometer',
                     'imu_hand', 'imu_chest', 'imu_ankle', 'heart_rate']:
         enc_type = safe_cfg.pop('encoder_type', 'lstm')
+        print(f"DEBUG: Using SequenceEncoder for {modality} with enc_type={enc_type}")
         return SequenceEncoder(
             input_dim=input_dim,
             output_dim=output_dim,
@@ -345,6 +348,9 @@ def build_encoder(
         )
 
     # Fallback
+    
+    print(f"DEBUG: FALLBACK to SimpleMLPEncoder for {modality} (this is unexpected!)")
+    print(f"DEBUG: safe_cfg before ** = {safe_cfg}")  # This will show if 'input_dim' sneaked in
     return SimpleMLPEncoder(
         input_dim=input_dim,
         output_dim=output_dim,

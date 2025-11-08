@@ -22,13 +22,12 @@ class EarlyFusion(nn.Module):
     Cons: Requires temporal alignment, sensitive to missing modalities
     """
     
-    def __init__(
-        self,
-        modality_dims: Dict[str, int],
-        hidden_dim: int = 256,
-        num_classes: int = 11,
-        dropout: float = 0.1
-    ):
+    def __init__(self,
+                 modality_dims: dict,
+                 num_classes: int,
+                 hidden_dim: int = 256,
+                 dropout: float = 0.1,
+                 **kwargs):
         """
         Args:
             modality_dims: Dictionary mapping modality name to feature dimension

@@ -59,6 +59,7 @@ class SequenceEncoder(nn.Module):
             # TODO: Implement GRU encoder
             self.rnn=nn.GRU(input_size=input_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True,
                             dropout=dropout if num_layers>1 else 0.0, bidirectional=False)
+            self.pool = nn.AvgPool1d(kernel_size=5, stride=5)  # 500 -> 100 steps
             self.projection = nn.Linear(hidden_dim, output_dim)
             
         elif encoder_type == 'cnn':

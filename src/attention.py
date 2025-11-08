@@ -93,9 +93,14 @@ class CrossModalAttention(nn.Module):
         attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, 1, 1)
         #   3. Apply mask if provided (set masked positions to -inf before softmax)
         if mask is not None:
-            attn = attn.masked_fill(~mask[:, None, None, :].bool(), float('-inf'))
+            attn = attn.masked_fill(~mask[:, None, None, None].bool(), float('-inf'))  # Fixed for (B, H, 1, 1)
         #   4. Apply softmax to get attention weights
         attn_weights = F.softmax(attn, dim=-1)
+        # Guard for all -inf (point 5)
+        if attn_weights.isnan().any():
+            attn_weights = torch.zeros_like(attn_weights)
+            attn_weights[:, :, :, 0] = 1.0  # Fallback to first
+        attn_weights = self.dropout(attn_weights)
         #   5. Apply attention to values: attn_weights @ V
         out = attn_weights @ V  # (B, H, 1, head_dim)
         out = out.transpose(1, 2).contiguous().view(batch_size, 1, self.hidden_dim).squeeze(1)  # (B, hidden_dim)
@@ -171,6 +176,10 @@ class TemporalAttention(nn.Module):
             attn = attn.masked_fill(mask.unsqueeze(1).unsqueeze(-1) == 0, float('-inf'))
         #   4. Return attended sequence and weights
         attn_weights = F.softmax(attn, dim=-1)
+        # Guard for all -inf (point 5)
+        if attn_weights.isnan().any():
+            attn_weights = torch.zeros_like(attn_weights)
+            attn_weights[:, :, :, 0] = 1.0  # Fallback to first
         attn_weights = self.dropout(attn_weights)
         out = (attn_weights @ V).transpose(1, 2).reshape(B, T, self.hidden_dim)  # (B, T, hidden_dim)
         out = self.out_proj(out)
@@ -288,9 +297,12 @@ class PairwiseModalityAttention(nn.Module):
                             value=modality_features[mod_b],
                             mask=modality_mask[:, j] if modality_mask is not None else None
                         )
-                        attended[mod_a] += attended_a  # Sum aggregate
+                        # Project to hidden_dim for accumulation (point 8)
+                        attended_a_proj = self.proj[mod_a](modality_features[mod_a]) if attended_a.size(-1) != self.hidden_dim else attended_a
+                        attended[mod_a] += attended_a_proj
                         attention_maps[key] = weights
         return attended, attention_maps
+                        
         
         
 

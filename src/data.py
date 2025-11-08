@@ -47,6 +47,14 @@ class MultimodalDataset(data.Dataset):
         
         # Load data
         self.data, self.labels = self._load_data()
+        labels_np = np.asarray(self.labels, dtype=np.int64)
+        uniq = np.unique(labels_np)
+        uniq.sort()
+        self.class_map = {old: i for i, old in enumerate(uniq)}
+        self.labels = np.vectorize(self.class_map.get)(labels_np).astype(np.int64)
+        self.num_classes = int(len(uniq))
+        # (optional) for compatibility with some code
+        self.classes = list(range(self.num_classes))
         
     def _load_data(self) -> Tuple[Dict, np.ndarray]:
         """
@@ -99,6 +107,8 @@ class MultimodalDataset(data.Dataset):
         features = {}
         for modality in self.modalities:
             feat = self.data[modality][idx]
+            if feat.ndim == 1:
+                feat = feat[None, ...]
             features[modality] = torch.from_numpy(feat).float()
         
         # Apply data augmentation if provided

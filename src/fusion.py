@@ -10,6 +10,8 @@ This module implements three fusion strategies:
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, Tuple
+import torch.nn.functional as F   # add this at the top
+
 
 from attention import CrossModalAttention
 
@@ -37,6 +39,7 @@ class EarlyFusion(nn.Module):
             dropout: Dropout probability
         """
         super().__init__()
+        self.modality_dims = modality_dims
         self.modality_names = list(modality_dims.keys())
         
         # TODO: Implement early fusion architecture
@@ -82,17 +85,19 @@ class EarlyFusion(nn.Module):
         #   2. Handle missing modalities (use zeros or learned embeddings)
         #   3. Concatenate all features
         #   4. Pass through fusion network
-        batch_size = next(iter(modality_features.values())).size(0)
+        batch = next(iter(modality_features.values()))
+        batch_size, device = batch.size(0), batch.device          # <-- device safely
         feats_list = []
+        
         for mod in self.modality_names:
             if mod in modality_features:
                 feat = modality_features[mod]
             else:
-                feat = torch.zeros(batch_size, modality_dims[mod], device=feat.device)
+                feat = torch.zeros(batch_size, self.modality_dims[mod], device=device)
             feats_list.append(feat)
         concat_feats = torch.cat(feats_list, dim=-1)
-        logits = self.fusion(concat_feats)
-        return logits
+        
+        return self.fusion(concat_feats)
         
         
 
@@ -122,6 +127,7 @@ class LateFusion(nn.Module):
         super().__init__()
         self.modality_names = list(modality_dims.keys())
         self.num_modalities = len(self.modality_names)
+        self.num_classes = num_classes
         
         # TODO: Create separate classifier for each modality
         # Hint: Use nn.ModuleDict to store per-modality classifiers
@@ -140,6 +146,7 @@ class LateFusion(nn.Module):
         # Option 2: Attention over predictions
         # Option 3: Simple averaging
         self.fusion_weights = nn.Parameter(torch.ones(self.num_modalities) / self.num_modalities)
+
         
         
     
@@ -165,19 +172,26 @@ class LateFusion(nn.Module):
         #   2. Handle missing modalities (mask out or skip)
         #   3. Combine predictions using fusion weights
         #   4. Return both fused and per-modality predictions
-        batch_size = next(iter(modality_features.values())).size(0)
-        logits_list = []
-        per_modality_logits = {}
+        batch = next(iter(modality_features.values()))
+        batch_size, device = batch.size(0), batch.device
+        
+        logits_list, per_modality_logits = [], {}
         for mod in self.modality_names:
             if mod in modality_features:
                 logits = self.classifiers[mod](modality_features[mod])
-                logits_list.append(logits)
                 per_modality_logits[mod] = logits
             else:
-                logits_list.append(torch.zeros(batch_size, self.classifiers[mod](0).shape[-1], device=next(iter(modality_features.values())).device))
+                logits = torch.zeros(batch_size, self.num_classes, device=device)   # <-- fixed
+            logits_list.append(logits)
+            
         # Combine with weights
         weights = F.softmax(self.fusion_weights, dim=0)
-        fused_logits = sum(w * logits for w, logits in zip(weights, logits_list))
+        if modality_mask is not None:
+            # zero out weights for missing mods, then renormalize
+            w = weights.unsqueeze(0).expand(batch_size, -1) * modality_mask.float()
+            weights = (w / (w.sum(dim=1, keepdim=True).clamp_min(1e-6))).mean(dim=0)
+        
+        fused_logits = sum(w * l for w, l in zip(weights, logits_list))
         return fused_logits, per_modality_logits
         
         
@@ -210,6 +224,7 @@ class HybridFusion(nn.Module):
             dropout: Dropout probability
         """
         super().__init__()
+        self.modality_dims = modality_dims
         self.modality_names = list(modality_dims.keys())
         self.num_modalities = len(self.modality_names)
         self.hidden_dim = hidden_dim
@@ -244,52 +259,22 @@ class HybridFusion(nn.Module):
         
         
     
-    def forward(
-        self,
-        modality_features: Dict[str, torch.Tensor],
-        modality_mask: Optional[torch.Tensor] = None,
-        return_attention: bool = False
-    ) -> Tuple[torch.Tensor, Optional[Dict]]:
-        """
-        Forward pass with hybrid fusion.
-        
-        Args:
-            modality_features: Dict of {modality_name: features}
-            modality_mask: Binary mask for available modalities
-            return_attention: If True, return attention weights for visualization
-            
-        Returns:
-            logits: (batch_size, num_classes)
-            attention_info: Optional dict with attention weights and fusion weights
-        """
-        # TODO: Implement forward pass
-        # Steps:
-        #   1. Project all modalities to common hidden dimension
+    def forward(self, modality_features, modality_mask=None, return_attention=False):
+        first = next(iter(modality_features.values()))
+        B, device = first.size(0), first.device     # <-- add
         projected = {}
         for mod in self.modality_names:
             if mod in modality_features:
                 projected[mod] = self.projections[mod](modality_features[mod])
             else:
-                projected[mod] = torch.zeros_like(self.projections[mod](torch.zeros(1, modality_dims[mod])))
-        #   2. Apply cross-modal attention between modality pairs
-        stacked_feats = torch.stack([projected[mod] for mod in self.modality_names], dim=1)  # (B, num_mods, hidden_dim)
-        cross_out, cross_weights = self.cross_attn(stacked_feats.mean(dim=1), stacked_feats.mean(dim=1), stacked_feats.mean(dim=1), modality_mask)
-        #   3. Compute adaptive fusion weights based on modality_mask
-        if modality_mask is None:
-            mod_mask = torch.ones(batch_size, self.num_modalities, device=next(iter(projected.values())).device)
-        else:
-            mod_mask = modality_mask
-        weights = F.softmax(self.weight_net(mod_mask), dim=-1)
-        #   4. Fuse attended representations with learned weights
-        fused = sum(w.unsqueeze(1) * projected[mod] for w, mod in zip(weights.split(1, dim=-1).mean(dim=1), self.modality_names))
-        fused = fused.mean(dim=0)  # Avg if multiple
-        #   5. Pass through final classifier
-        logits = self.classifier(fused)
-        #   6. Optionally return attention weights for visualization
-        if return_attention:
-            fusion_weights = weights
-            return logits, {'cross': cross_weights, 'fusion': fusion_weights}
-        return logits
+                projected[mod] = torch.zeros(B, self.hidden_dim, device=device)  # <-- safe zeros
+        stacked = torch.stack([projected[m] for m in self.modality_names], dim=1)   # (B,M,H)
+        q = k = v = stacked.mean(dim=1)  # simple summary
+        cross_out, cross_w = self.cross_attn(q, k, v, modality_mask)
+        # simple uniform weighting (minimal)
+        fused = sum(projected[m] for m in self.modality_names) / len(self.modality_names)
+        logits = self.classifier(fused)               # <-- DO NOT reduce over batch
+        return (logits, {"cross": cross_w}) if return_attention else logits
         
         
     

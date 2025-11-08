@@ -44,10 +44,15 @@ class CrossModalAttention(nn.Module):
             f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})"
         
         # TODO: Implement multi-head attention projections
+        self.q_proj = nn.Linear(query_dim, hidden_dim)
+        self.k_proj = nn.Linear(key_dim, hidden_dim)
+        self.v_proj = nn.Linear(key_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = self.head_dim ** -0.5
         # Hint: Use nn.Linear for Q, K, V projections
         # Query from modality A, Key and Value from modality B
         
-        raise NotImplementedError("Implement cross-modal attention projections")
     
     def forward(
         self,
@@ -74,13 +79,22 @@ class CrossModalAttention(nn.Module):
         # TODO: Implement multi-head attention computation
         # Steps:
         #   1. Project query, key, value to (batch, num_heads, seq_len, head_dim)
+        Q = self.q_proj(query).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, 1, head_dim)
+        K = self.k_proj(key).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, 1, head_dim)
+        V = self.v_proj(value).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, 1, head_dim)
         #   2. Compute attention scores: Q @ K^T / sqrt(head_dim)
+        attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, 1, 1)
         #   3. Apply mask if provided (set masked positions to -inf before softmax)
+        if mask is not None:
+            attn = attn.masked_fill(mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1) == 0, float('-inf'))
         #   4. Apply softmax to get attention weights
+        attn_weights = F.softmax(attn, dim=-1)
         #   5. Apply attention to values: attn_weights @ V
+        out = attn_weights @ V  # (B, H, 1, head_dim)
+        out = out.transpose(1, 2).contiguous().view(batch_size, 1, self.hidden_dim).squeeze(1)  # (B, hidden_dim)
         #   6. Reshape and project back to hidden_dim
-        
-        raise NotImplementedError("Implement cross-modal attention forward pass")
+        out = self.out_proj(out)
+        return out, attn_weights.squeeze(-1).squeeze(-1)  # (B, H)
 
 
 class TemporalAttention(nn.Module):
@@ -111,9 +125,13 @@ class TemporalAttention(nn.Module):
         self.head_dim = hidden_dim // num_heads
         
         # TODO: Implement self-attention over temporal dimension
+        self.qkv_proj = nn.Linear(feature_dim, 3 * hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = self.head_dim ** -0.5
         # Hint: Similar to CrossModalAttention but Q, K, V from same modality
         
-        raise NotImplementedError("Implement temporal attention")
+        
     
     def forward(
         self,
@@ -134,11 +152,23 @@ class TemporalAttention(nn.Module):
         # TODO: Implement temporal self-attention
         # Steps:
         #   1. Project sequence to Q, K, V
-        #   2. Compute self-attention over sequence length
-        #   3. Apply mask for variable-length sequences
-        #   4. Return attended sequence and weights
+        B, T, D = sequence.shape
+        qkv = self.qkv_proj(sequence).reshape(B, T, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        Q, K, V = qkv[0], qkv[1], qkv[2]  # (B, H, T, head_dim)
         
-        raise NotImplementedError("Implement temporal attention forward pass")
+        #   2. Compute self-attention over sequence length
+        attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, T, T)
+        
+        #   3. Apply mask for variable-length sequences
+        if mask is not None:
+            attn = attn.masked_fill(mask.unsqueeze(1).unsqueeze(-1) == 0, float('-inf'))
+        #   4. Return attended sequence and weights
+        attn_weights = F.softmax(attn, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        out = (attn_weights @ V).transpose(1, 2).reshape(B, T, self.hidden_dim)  # (B, T, hidden_dim)
+        out = self.out_proj(out)
+        return out, attn_weights
+        
     
     def pool_sequence(
         self,
@@ -156,11 +186,16 @@ class TemporalAttention(nn.Module):
             pooled: (batch_size, hidden_dim) - fixed-size representation
         """
         # TODO: Implement attention-based pooling
+        
         # Option 1: Weighted average using mean attention weights
+        weights = attention_weights.mean(dim=1).mean(dim=-1)  # (B, seq_len)
+        weights = F.softmax(weights, dim=-1)
+        pooled = (weights.unsqueeze(-1) * sequence).sum(dim=1)  # (B, hidden_dim)
+        return pooled
         # Option 2: Learn pooling query vector
         # Option 3: Take output at special [CLS] token position
         
-        raise NotImplementedError("Implement attention-based pooling")
+        
 
 
 class PairwiseModalityAttention(nn.Module):
@@ -192,10 +227,21 @@ class PairwiseModalityAttention(nn.Module):
         self.hidden_dim = hidden_dim
         
         # TODO: Create CrossModalAttention for each modality pair
+        
         # Hint: Use nn.ModuleDict with keys like "video_to_audio"
         # For each pair (A, B), create attention A->B and B->A
+        self.pairwise_attns = nn.ModuleDict()
+        for i, mod_a in enumerate(self.modality_names):
+            for j, mod_b in enumerate(self.modality_names):
+                if i != j:
+                    key = f"{mod_a}_to_{mod_b}"
+                    self.pairwise_attns[key] = CrossModalAttention(
+                        query_dim=modality_dims[mod_a],
+                        key_dim=modality_dims[mod_b],
+                        hidden_dim=hidden_dim,
+                        num_heads=num_heads,
+                        dropout=dropout)
         
-        raise NotImplementedError("Implement pairwise modality attention")
     
     def forward(
         self,
@@ -222,8 +268,24 @@ class PairwiseModalityAttention(nn.Module):
         #   2. Aggregate attended features (options: sum, concat, gating)
         #   3. Handle missing modalities using mask
         #   4. Return attended features and attention maps for visualization
+        attended = {mod: torch.zeros_like(modality_features[mod]) for mod in modality_features}
+        attention_maps = {}
+        for i, mod_a in enumerate(self.modality_names):
+            for j, mod_b in enumerate(self.modality_names):
+                if i != j:
+                    key = f"{mod_a}_to_{mod_b}"
+                    if mod_a in modality_features and mod_b in modality_features:
+                        attended_a, weights = self.pairwise_attns[key](
+                            query=modality_features[mod_a],
+                            key=modality_features[mod_b],
+                            value=modality_features[mod_b],
+                            mask=modality_mask[:, j] if modality_mask is not None else None
+                        )
+                        attended[mod_a] += attended_a  # Sum aggregate
+                        attention_maps[key] = weights
+        return attended, attention_maps
         
-        raise NotImplementedError("Implement pairwise attention forward pass")
+        
 
 
 def visualize_attention(
@@ -245,8 +307,20 @@ def visualize_attention(
     # TODO: Implement attention visualization
     # Create heatmap showing which modalities attend to which
     # Useful for understanding fusion behavior
+    weights = attention_weights.mean(dim=0).detach().cpu().numpy()  # Avg heads
+    plt.figure(figsize=(8, 6))
+    plt.imshow(weights, cmap='Blues', aspect='auto')
+    plt.xlabel('Key Modalities')
+    plt.ylabel('Query Modalities')
+    plt.xticks(range(len(modality_names)), modality_names, rotation=45)
+    plt.yticks(range(len(modality_names)), modality_names)
+    plt.title('Cross-Modal Attention Heatmap')
+    plt.colorbar()
+    if save_path:
+        plt.savefig(save_path)
+    plt.show()
     
-    raise NotImplementedError("Implement attention visualization")
+    
 
 
 if __name__ == '__main__':

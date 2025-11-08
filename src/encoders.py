@@ -309,6 +309,21 @@ class SimpleMLPEncoder(nn.Module):
         if features.dim() == 3:
             features = features.mean(dim=1)
         return self.encoder(features)
+from typing import Any, Dict
+try:
+    from omegaconf import DictConfig, OmegaConf
+except Exception:
+    DictConfig = tuple()  # harmless fallback
+    OmegaConf = None
+
+def _to_plain_dict(cfg: Any) -> Dict[str, Any]:
+    if cfg is None:
+        return {}
+    if OmegaConf is not None and isinstance(cfg, DictConfig):
+        return OmegaConf.to_container(cfg, resolve=True)  # plain dict
+    if isinstance(cfg, dict):
+        return dict(cfg)
+    return {}
         
         
 
@@ -319,44 +334,24 @@ def build_encoder(
     output_dim: int,
     encoder_config: dict = None
 ) -> nn.Module:
-    if encoder_config is None:
-        encoder_config = {}
+    cfg = _to_plain_dict(encoder_config)
+    mod = str(modality).strip().lower()
+    for k in ("input_dim", "output_dim", "type", "frame_dim"):
+        if k in cfg:
+            cfg.pop(k)
+    if mod in ("video", "frames"):
+        return FrameEncoder(frame_dim=input_dim, output_dim=output_dim, **cfg)
+    if mod in (
+        "imu", "audio", "mocap", "accelerometer",
+        "imu_hand", "imu_chest", "imu_ankle", "heart_rate"
+    ):
+        enc_type = cfg.pop("encoder_type", "lstm")
+        return SequenceEncoder(input_dim=input_dim, output_dim=output_dim,
+                               encoder_type=enc_type, **cfg)
+        return SimpleMLPEncoder(input_dim=input_dim, output_dim=output_dim, **cfg)
 
-    # Drop problematic keys so we don't pass duplicates
-    safe_cfg = {k: v for k, v in encoder_config.items()
-                if k not in ['input_dim', 'output_dim', 'type']}
-    print(f"DEBUG build_encoder: modality='{modality}', input_dim={input_dim}, encoder_config={encoder_config}, safe_cfg keys={list(safe_cfg.keys())}")
 
-    if modality in ['video', 'frames']:
-        print(f"DEBUG: Using FrameEncoder for {modality}")
-        return FrameEncoder(
-            frame_dim=input_dim,
-            output_dim=output_dim,
-            **safe_cfg
-        )
-
-    # Treat PAMAP2 streams as sequences
-    if modality in ['imu', 'audio', 'mocap', 'accelerometer',
-                    'imu_hand', 'imu_chest', 'imu_ankle', 'heart_rate']:
-        enc_type = safe_cfg.pop('encoder_type', 'lstm')
-        print(f"DEBUG: Using SequenceEncoder for {modality} with enc_type={enc_type}")
-        return SequenceEncoder(
-            input_dim=input_dim,
-            output_dim=output_dim,
-            encoder_type=enc_type,
-            **safe_cfg
-        )
-
-    # Fallback
     
-    print(f"DEBUG: FALLBACK to SimpleMLPEncoder for {modality} (this is unexpected!)")
-    print(f"DEBUG: safe_cfg before ** = {safe_cfg}")  # This will show if 'input_dim' sneaked in
-    return SimpleMLPEncoder(
-        input_dim=input_dim,
-        output_dim=output_dim,
-        **safe_cfg
-    )
-
 
 
 if __name__ == '__main__':

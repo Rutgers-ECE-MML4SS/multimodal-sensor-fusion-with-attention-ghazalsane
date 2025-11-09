@@ -114,9 +114,9 @@ class LateFusion(nn.Module):
         self,
         num_classes: int,
         modality_dims: Dict[str, int],
+        num_heads: int | None = None,
         hidden_dim: int = 256,
         dropout: float = 0.1,
-        num_heads: int | None = None,   # <-- accept & ignore
         **kwargs,                       # <-- future-proof
     ):
         """

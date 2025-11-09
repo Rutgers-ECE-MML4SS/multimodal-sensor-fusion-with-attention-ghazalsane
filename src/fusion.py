@@ -337,8 +337,6 @@ def build_fusion_model(
         'hybrid': HybridFusion,
     }
     
-    
-    
     if fusion_type != 'hybrid':
         kwargs.pop('num_heads', None)  # <-- Add 4 spaces (or 1 tab) here for indentation
     

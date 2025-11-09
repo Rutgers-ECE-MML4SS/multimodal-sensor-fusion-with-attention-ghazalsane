@@ -199,90 +199,69 @@ class LateFusion(nn.Module):
         
 
 
+from attention import ModalitySelfAttention
+
 class HybridFusion(nn.Module):
-    """
-    Hybrid fusion: Cross-modal attention + learned fusion weights.
-    
-    Pros: Rich cross-modal interaction, robust to missing modalities
-    Cons: More complex, higher computation cost
-    
-    This is the main focus of the assignment!
-    """
-    
-    def __init__(
-        self,
-        modality_dims: Dict[str, int],
-        hidden_dim: int = 256,
-        num_classes: int = 11,
-        num_heads: int = 4,
-        dropout: float = 0.1
-    ):
-        """
-        Args:
-            modality_dims: Dictionary mapping modality name to feature dimension
-            hidden_dim: Hidden dimension for fusion
-            num_classes: Number of output classes
-            num_heads: Number of attention heads
-            dropout: Dropout probability
-        """
+    def __init__(self, modality_dims: dict, hidden_dim: int = 256, num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
-        self.modality_dims = modality_dims
         self.modality_names = list(modality_dims.keys())
-        self.num_modalities = len(self.modality_names)
         self.hidden_dim = hidden_dim
-        
-        # TODO: Project each modality to common hidden dimension
-        # Hint: Use nn.ModuleDict with Linear layers per modality
-        self.projections = nn.ModuleDict()
-        for mod, dim in modality_dims.items():
-            self.projections[mod] = nn.Linear(dim, hidden_dim)
-        
-        # TODO: Implement cross-modal attention
-        # Use CrossModalAttention from attention.py
-        # Each modality should attend to all other modalities
-        self.cross_attn = CrossModalAttention(hidden_dim, hidden_dim, hidden_dim, num_heads, dropout)
-        
-        # TODO: Learn adaptive fusion weights based on modality availability
-        # Hint: Small MLP that takes modality mask and outputs weights
-        self.weight_net = nn.Sequential(
-            nn.Linear(self.num_modalities, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.num_modalities)
-        )
-        
-        # TODO: Final classifier
-        # Takes fused representation -> num_classes logits
+
+        # Project each modality to common hidden_dim
+        self.projections = nn.ModuleDict({
+            m: nn.Linear(modality_dims[m], hidden_dim) for m in self.modality_names
+        })
+
+        # NEW: self-attention over modalities
+        self.mod_self_attn = ModalitySelfAttention(hidden_dim=hidden_dim, num_heads=num_heads, dropout=dropout)
+
+        # Classifier (you can keep yours)
         self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes)
+            nn.Linear(hidden_dim, /*num_classes gets set in outer module*/  )  # leave as-is in your code
         )
+
         
         
     
-    def forward(self, modality_features, modality_mask=None, return_attention=False):
-        first = next(iter(modality_features.values()))
-        B, device = first.size(0), first.device
-        projected = {}
-        for mod in self.modality_names:
-            if mod in modality_features:
-                projected[mod] = self.projections[mod](modality_features[mod])
-            else:
-                projected[mod] = torch.zeros(B, self.hidden_dim, device=device)
-        stacked = torch.stack([projected[m] for m in self.modality_names], dim=1)
-        fused_seed = stacked.mean(dim=1)        # (B, H) a simple summary token
-        q = fused_seed.unsqueeze(1)             # (B, 1, H)   Q = 1
-        k = stacked                             # (B, M, H)   K = M (modalities)
-        v = stacked
-        if modality_mask is None:
-            modality_mask = torch.ones(B, k.size(1), dtype=torch.bool, device=device)
-        attn_mask = modality_mask.view(B, 1, 1, k.size(1))
-        cross_out, cross_w = self.cross_attn(q, k, v, attn_mask)
-        fused = cross_out.squeeze(1)
-        # simple uniform weighting (minimal)
-        logits = self.classifier(fused)
-        return (logits, {"cross": cross_w}) if return_attention else logits
+    def forward(self, modality_features: dict, modality_mask: Optional[torch.Tensor] = None, return_attention: bool = False):
+    """
+    modality_features: {mod: (B, D_mod)}
+    modality_mask: (B, M) with order = self.modality_names
+    """
+    # 1) Project to common space and stack tokens (B, M, H)
+    B = next(iter(modality_features.values())).size(0)
+    device = next(iter(modality_features.values())).device
+    tokens = []
+    for m in self.modality_names:
+        if m in modality_features:
+            tokens.append(self.projections[m](modality_features[m]))   # (B,H)
+        else:
+            tokens.append(torch.zeros(B, self.hidden_dim, device=device))
+    tokens = torch.stack(tokens, dim=1)  # (B,M,H)
+
+    # If no mask was provided, assume all present
+    if modality_mask is None:
+        modality_mask = torch.ones(B, len(self.modality_names), device=device, dtype=torch.bool)
+
+    # 2) Self-attention over modalities (B,M,H)
+    tokens_out, attn_w = self.mod_self_attn(tokens, modality_mask)  # attn_w: (B,H,M,M)
+
+    # 3) Mask-aware pooling to a single fused vector
+    mask_f = modality_mask.float().unsqueeze(-1)                      # (B,M,1)
+    denom = mask_f.sum(dim=1).clamp_min(1.0)                         # (B,1)
+    fused = (tokens_out * mask_f).sum(dim=1) / denom                 # (B,H)
+
+    # 4) Classify
+    logits = self.classifier(fused)
+
+    if return_attention:
+        return logits, {"modality_attn": attn_w}
+    return logits
+
         
         
     

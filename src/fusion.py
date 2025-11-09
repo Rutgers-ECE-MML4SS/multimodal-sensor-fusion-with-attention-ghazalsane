@@ -112,8 +112,8 @@ class LateFusion(nn.Module):
     
     def __init__(
         self,
-        modality_dims: Dict[str, int],
         num_classes: int,
+        modality_dims: Dict[str, int],
         hidden_dim: int = 256,
         dropout: float = 0.1,
         num_heads: int | None = None,   # <-- accept & ignore

@@ -337,8 +337,7 @@ def build_fusion_model(
         'hybrid': HybridFusion,
     }
     
-    if fusion_type not in fusion_classes:
-        raise ValueError(f"Unknown fusion type: {fusion_type}")
+    
     if fusion_type != 'hybrid':
         kwargs.pop('num_heads', None)
     

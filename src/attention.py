@@ -41,72 +41,103 @@ class CrossModalAttention(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
-        
         assert hidden_dim % num_heads == 0, \
             f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})"
         
         # TODO: Implement multi-head attention projections
         self.q_proj = nn.Linear(query_dim, hidden_dim)
-        self.k_proj = nn.Linear(key_dim, hidden_dim)
-        self.v_proj = nn.Linear(key_dim, hidden_dim)
+        self.k_proj = nn.Linear(key_dim,   hidden_dim)
+        self.v_proj = nn.Linear(key_dim,   hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
         self.dropout = nn.Dropout(dropout)
         self.scale = self.head_dim ** -0.5
         # Hint: Use nn.Linear for Q, K, V projections
         # Query from modality A, Key and Value from modality B
-    def _maybe_3d(self, x):
-        # Accept (B, D) or (B, T, D). If (B, D), treat T=1
-        if x.dim() == 2:  # (B, D)
-            return x.unsqueeze(1), True  # (B, 1, D), was_flat=True
-        return x, False 
+    @staticmethod
+    def _to_3d(x: torch.Tensor) -> tuple[torch.Tensor, bool]:
+        # (B,D) -> (B,1,D), flag=True ; (B,L,D) -> as-is, flag=False
+        if x.dim() == 2:
+            return x.unsqueeze(1), True
+        return x, False
+
+    def _normalize_mask(
+        self, mask: Optional[torch.Tensor], B: int, Lk: int, device: torch.device
+    ) -> Optional[torch.Tensor]:
+        """
+        Returns mask shaped (B,1,1,Lk) with True=keep, False=mask.
+        Accepts:
+          - None
+          - (B,)                -> broadcast to Lk
+          - (B, Lk)
+          - (B, 1, 1, Lk)
+        """
+        if mask is None:
+            return None
+        m = mask
+        if m.dtype != torch.bool:
+            m = m.bool()
+        if m.dim() == 1:
+            m = m.view(B, 1, 1, 1).expand(B, 1, 1, Lk)
+        elif m.dim() == 2:
+            # (B, Lk) -> (B,1,1,Lk)
+            assert m.size(1) == Lk, f"mask Lk={m.size(1)} != key length {Lk}"
+            m = m.view(B, 1, 1, Lk)
+        elif m.dim() == 4:
+            # assume already (B,1,1,Lk)
+            assert m.size(0) == B and m.size(-1) == Lk, "mask shape mismatch"
+        else:
+            raise ValueError(f"Unsupported mask shape: {tuple(m.shape)}")
+        return m.to(device)
         
     
     def forward(
         self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
+        query: torch.Tensor,   # (B,Dq) or (B,Lq,Dq)
+        key:   torch.Tensor,   # (B,Dk) or (B,Lk,Dk)
+        value: torch.Tensor,   # (B,Dk) or (B,Lv,Dk), expect Lk == Lv
         mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass for cross-modal attention.
-        
-        Args:
-            query: (batch_size, query_dim) - features from modality A
-            key: (batch_size, key_dim) - features from modality B
-            value: (batch_size, key_dim) - features from modality B
-            mask: Optional (batch_size,) - binary mask for valid keys
-            
-        Returns:
-            attended_features: (batch_size, hidden_dim) - query attended by key/value
-            attention_weights: (batch_size, num_heads, 1, 1) - attention scores
-        """
-        batch_size = query.size(0)
-        
-        # TODO: Implement multi-head attention computation
-        # Steps:
-        #   1. Project query, key, value to (batch, num_heads, seq_len, head_dim)
-        Q = self.q_proj(query).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, 1, head_dim)
-        K = self.k_proj(key).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, 1, head_dim)
-        V = self.v_proj(value).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, 1, head_dim)
-        #   2. Compute attention scores: Q @ K^T / sqrt(head_dim)
-        attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, 1, 1)
-        #   3. Apply mask if provided (set masked positions to -inf before softmax)
-        if mask is not None:
-            attn = attn.masked_fill(~mask[:, None, None, None].bool(), float('-inf'))  # Fixed for (B, H, 1, 1)
-        #   4. Apply softmax to get attention weights
-        attn_weights = F.softmax(attn, dim=-1)
-        # Guard for all -inf (point 5)
-        if attn_weights.isnan().any():
-            attn_weights = torch.zeros_like(attn_weights)
-            attn_weights[:, :, :, 0] = 1.0  # Fallback to first
-        attn_weights = self.dropout(attn_weights)
-        #   5. Apply attention to values: attn_weights @ V
-        out = attn_weights @ V  # (B, H, 1, head_dim)
-        out = out.transpose(1, 2).contiguous().view(batch_size, 1, self.hidden_dim).squeeze(1)  # (B, hidden_dim)
-        #   6. Reshape and project back to hidden_dim
+        B = query.size(0)
+        device = query.device
+
+        # Ensure 3D
+        query, _ = self._to_3d(query)   # (B, Lq, Dq)
+        key,   _ = self._to_3d(key)     # (B, Lk, Dk)
+        value, _ = self._to_3d(value)   # (B, Lv, Dk)
+        Lq, Lk, Lv = query.size(1), key.size(1), value.size(1)
+        assert Lk == Lv, f"K length (Lk={Lk}) must equal V length (Lv={Lv})"
+
+        # Projections -> (B, H, L*, dh)
+        Q = self.q_proj(query).view(B, Lq, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.k_proj(key  ).view(B, Lk, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.v_proj(value).view(B, Lv, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Scores (B, H, Lq, Lk)
+        scores = (Q @ K.transpose(-2, -1)) * self.scale
+
+        # Normalize/attach mask (True=keep). If your convention is True=mask, invert here.
+        attn_mask = self._normalize_mask(mask, B, Lk, device)
+        if attn_mask is not None:
+            # attn_mask True=keep -> convert to additive mask
+            # we mask where keep==False
+            scores = scores.masked_fill(~attn_mask, float("-inf"))
+
+        # Weights & dropout
+        weights = torch.softmax(scores, dim=-1)  # (B,H,Lq,Lk)
+        if torch.isnan(weights).any():
+            weights = torch.zeros_like(weights)
+            weights[..., 0] = 1.0
+        weights = self.dropout(weights)
+
+        # Output (B,H,Lq,dh) -> (B,Lq,H*dh) -> proj -> (B,Lq,H*dh)
+        out = weights @ V
+        out = out.transpose(1, 2).contiguous().view(B, Lq, self.hidden_dim)
         out = self.out_proj(out)
-        return out, attn_weights.squeeze(-1).squeeze(-1)  # (B, H)
+
+        # Return (B, hidden_dim) if Lq==1 to match your original API
+        if Lq == 1:
+            return out.squeeze(1), weights
+        return out, weights
 
 
 class TemporalAttention(nn.Module):

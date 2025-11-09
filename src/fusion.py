@@ -237,45 +237,45 @@ class HybridFusion(nn.Module):
         
     
     def forward(
-    self,
-    modality_features: dict,
-    modality_mask: Optional[torch.Tensor] = None,
-    return_attention: bool = False,
-):
-    """
-    modality_features: {mod: (B, D_mod)}
-    modality_mask: (B, M) with order = self.modality_names
-    """
-    # 1) Project to common space and stack tokens (B, M, H)
-    first = next(iter(modality_features.values()))
-    B, device = first.size(0), first.device
-
-    tokens = []
-    for m in self.modality_names:
-        if m in modality_features:
-            tokens.append(self.projections[m](modality_features[m]))  # (B,H)
-        else:
-            tokens.append(torch.zeros(B, self.hidden_dim, device=device))
-    tokens = torch.stack(tokens, dim=1)  # (B,M,H)
-
-    # If no mask provided, assume all present
-    if modality_mask is None:
-        modality_mask = torch.ones(B, len(self.modality_names), device=device, dtype=torch.bool)
-
-    # 2) Self-attention over modalities -> (B,M,H), attn_w: (B, num_heads, M, M)
-    tokens_out, attn_w = self.mod_self_attn(tokens, modality_mask)
-
-    # 3) Mask-aware pooling to a single fused vector
-    mask_f = modality_mask.float().unsqueeze(-1)   # (B,M,1)
-    denom = mask_f.sum(dim=1).clamp_min(1.0)       # (B,1)
-    fused = (tokens_out * mask_f).sum(dim=1) / denom  # (B,H)
-
-    # 4) Classify
-    logits = self.classifier(fused)
-
-    if return_attention:
-        return logits, {"modality_attn": attn_w}
-    return logits
+        self,
+        modality_features: dict,
+        modality_mask: Optional[torch.Tensor] = None,
+        return_attention: bool = False,
+    ):
+        """
+        modality_features: {mod: (B, D_mod)}
+        modality_mask: (B, M) with order = self.modality_names
+        """
+        # 1) Project to common space and stack tokens (B, M, H)
+        first = next(iter(modality_features.values()))
+        B, device = first.size(0), first.device
+    
+        tokens = []
+        for m in self.modality_names:
+            if m in modality_features:
+                tokens.append(self.projections[m](modality_features[m]))  # (B,H)
+            else:
+                tokens.append(torch.zeros(B, self.hidden_dim, device=device))
+        tokens = torch.stack(tokens, dim=1)  # (B,M,H)
+    
+        # If no mask provided, assume all present
+        if modality_mask is None:
+            modality_mask = torch.ones(B, len(self.modality_names), device=device, dtype=torch.bool)
+    
+        # 2) Self-attention over modalities -> (B,M,H), attn_w: (B, num_heads, M, M)
+        tokens_out, attn_w = self.mod_self_attn(tokens, modality_mask)
+    
+        # 3) Mask-aware pooling to a single fused vector
+        mask_f = modality_mask.float().unsqueeze(-1)   # (B,M,1)
+        denom = mask_f.sum(dim=1).clamp_min(1.0)       # (B,1)
+        fused = (tokens_out * mask_f).sum(dim=1) / denom  # (B,H)
+    
+        # 4) Classify
+        logits = self.classifier(fused)
+    
+        if return_attention:
+            return logits, {"modality_attn": attn_w}
+        return logits
 
 
         

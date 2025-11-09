@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple
 import torch.nn.functional as F   # add this at the top
 
 
+
 from attention import CrossModalAttention
 
 
@@ -202,26 +203,34 @@ class LateFusion(nn.Module):
 from attention import ModalitySelfAttention
 
 class HybridFusion(nn.Module):
-    def __init__(self, modality_dims: dict, hidden_dim: int = 256, num_heads: int = 4, dropout: float = 0.1):
+    def __init__(
+        self,
+        modality_dims: Dict[str, int],
+        num_classes: int,                  # <— NEW
+        hidden_dim: int = 256,
+        num_heads: int = 4,
+        dropout: float = 0.1
+    ):
         super().__init__()
         self.modality_names = list(modality_dims.keys())
         self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
 
-        # Project each modality to common hidden_dim
         self.projections = nn.ModuleDict({
             m: nn.Linear(modality_dims[m], hidden_dim) for m in self.modality_names
         })
 
-        # NEW: self-attention over modalities
-        self.mod_self_attn = ModalitySelfAttention(hidden_dim=hidden_dim, num_heads=num_heads, dropout=dropout)
+        from attention import ModalitySelfAttention
+        self.mod_self_attn = ModalitySelfAttention(
+            hidden_dim=hidden_dim, num_heads=num_heads, dropout=dropout
+        )
 
-        # Classifier (you can keep yours)
         self.classifier = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, /*num_classes gets set in outer module*/  )  # leave as-is in your code
+            nn.Linear(hidden_dim, num_classes)   # <— FIXED
         )
 
         
@@ -257,10 +266,9 @@ class HybridFusion(nn.Module):
 
     # 4) Classify
     logits = self.classifier(fused)
-
-    if return_attention:
-        return logits, {"modality_attn": attn_w}
-    return logits
+        if return_attention:
+            return logits, {"modality_attn": attn_w}
+        return logits
 
         
         

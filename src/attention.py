@@ -48,32 +48,41 @@ class ModalitySelfAttention(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def _mha(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        x: (B, M, H)
-        mask: Optional (B, M) with 1 for present modality, 0 for missing
-        """
-        B, M, H = x.shape
-        q = self.q_proj(x).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,hd)
-        k = self.k_proj(x).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,hd)
-        v = self.v_proj(x).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,hd)
+    # --- inside attention.py ---
 
-        # Attention logits
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # (B,H,M,M)
+def _mha(self, tokens: torch.Tensor, mask: Optional[torch.Tensor]):
+    """
+    tokens: (B, M, H)
+    mask:   (B, M)  1/0 or bool; True/1 means modality present
+    returns: y (B,M,H), attn_w (B, num_heads, M, M)
+    """
+    B, M, _ = tokens.shape
 
-        if mask is not None:
-            # mask_qk: (B,1,M,1) * (B,1,1,M) → (B,1,M,M)
-            mask_q = mask[:, None, :, None]  # queries
-            mask_k = mask[:, None, None, :]  # keys
-            valid = (mask_q & mask_k).to(attn.dtype)
-            attn = attn.masked_fill(valid == 0, float("-inf"))
+    # Project to Q,K,V and reshape for multi-head
+    q = self.q_proj(tokens).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,dh)
+    k = self.k_proj(tokens).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,dh)
+    v = self.v_proj(tokens).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,dh)
 
-        attn_w = F.softmax(attn, dim=-1)
-        attn_w = self.dropout(attn_w)
-        out = torch.matmul(attn_w, v)  # (B,H,M,hd)
-        out = out.transpose(1, 2).contiguous().view(B, M, H)  # (B,M,H)
-        out = self.out_proj(out)  # (B,M,H)
-        return out, attn_w
+    # Scaled dot-product attention
+    attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)  # (B,H,M,M)
+
+    # ---- FIXED MASK HANDLING ----
+    if mask is not None:
+        # accept float (0/1) or bool; convert to bool
+        if mask.dtype is not torch.bool:
+            mask = mask > 0.5
+        # valid pairs where both query & key present
+        valid_pairs = (mask[:, None, :, None] & mask[:, None, None, :])  # (B,1,M,M) -> broadcast over heads
+        attn = attn.masked_fill(~valid_pairs, float("-inf"))
+
+    attn_w = torch.softmax(attn, dim=-1)  # (B,H,M,M)
+    attn_w = self.dropout(attn_w)
+
+    y = (attn_w @ v)                              # (B,H,M,dh)
+    y = y.transpose(1, 2).contiguous().view(B, M, self.hidden_dim)  # (B,M,H)
+    y = self.out_proj(y)
+    return y, attn_w
+
 
     def forward(self, tokens: torch.Tensor, modality_mask: Optional[torch.Tensor] = None):
         """

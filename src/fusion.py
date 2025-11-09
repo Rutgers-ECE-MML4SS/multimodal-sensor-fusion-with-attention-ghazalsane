@@ -263,19 +263,25 @@ class HybridFusion(nn.Module):
     
     def forward(self, modality_features, modality_mask=None, return_attention=False):
         first = next(iter(modality_features.values()))
-        B, device = first.size(0), first.device     # <-- add
+        B, device = first.size(0), first.device
         projected = {}
         for mod in self.modality_names:
             if mod in modality_features:
                 projected[mod] = self.projections[mod](modality_features[mod])
             else:
-                projected[mod] = torch.zeros(B, self.hidden_dim, device=device)  # <-- safe zeros
-        stacked = torch.stack([projected[m] for m in self.modality_names], dim=1)   # (B,M,H)
-        q = k = v = stacked.mean(dim=1)  # simple summary
-        cross_out, cross_w = self.cross_attn(q, k, v, modality_mask)
+                projected[mod] = torch.zeros(B, self.hidden_dim, device=device)
+        stacked = torch.stack([projected[m] for m in self.modality_names], dim=1)
+        fused_seed = stacked.mean(dim=1)        # (B, H) a simple summary token
+        q = fused_seed.unsqueeze(1)             # (B, 1, H)   Q = 1
+        k = stacked                             # (B, M, H)   K = M (modalities)
+        v = stacked
+        if modality_mask is None:
+            modality_mask = torch.ones(B, k.size(1), dtype=torch.bool, device=device)
+        attn_mask = modality_mask.view(B, 1, 1, k.size(1))
+        cross_out, cross_w = self.cross_attn(q, k, v, attn_mask)
+        fused = cross_out.squeeze(1)
         # simple uniform weighting (minimal)
-        fused = sum(projected[m] for m in self.modality_names) / len(self.modality_names)
-        logits = self.classifier(fused)               # <-- DO NOT reduce over batch
+        logits = self.classifier(fused)
         return (logits, {"cross": cross_w}) if return_attention else logits
         
         

@@ -114,7 +114,7 @@ class LateFusion(nn.Module):
         self,
         modality_dims: Dict[str, int],
         hidden_dim: int = 256,
-        num_classes: int = 11,
+        num_classes: int = int,
         dropout: float = 0.1,
         num_heads: int | None = None,   # <-- accept & ignore
         **kwargs,                       # <-- future-proof
@@ -193,7 +193,7 @@ class LateFusion(nn.Module):
             w = weights.unsqueeze(0).expand(batch_size, -1) * modality_mask.float()
             weights = (w / (w.sum(dim=1, keepdim=True).clamp_min(1e-6))).mean(dim=0)
         
-        fused_logits = sum(w * l for w, l in zip(weights, logits_list))
+        fused_logits = sum(weights[:, i:i+1] * logits_list[i] for i in range(self.num_modalities))
         return fused_logits, per_modality_logits
         
         

@@ -115,7 +115,8 @@ class LateFusion(nn.Module):
         modality_dims: Dict[str, int],
         hidden_dim: int = 256,
         num_classes: int = 11,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        **kwargs,
     ):
         """
         Args:

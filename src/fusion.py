@@ -114,7 +114,7 @@ class LateFusion(nn.Module):
         self,
         modality_dims: Dict[str, int],
         hidden_dim: int = 256,
-        num_classes: int = int,
+        num_classes: int,
         dropout: float = 0.1,
         num_heads: int | None = None,   # <-- accept & ignore
         **kwargs,                       # <-- future-proof
@@ -193,7 +193,7 @@ class LateFusion(nn.Module):
             w = weights.unsqueeze(0).expand(batch_size, -1) * modality_mask.float()
             weights = (w / (w.sum(dim=1, keepdim=True).clamp_min(1e-6))).mean(dim=0)
         
-        fused_logits = sum(weights[:, i:i+1] * logits_list[i] for i in range(self.num_modalities))
+        fused_logits = sum(weights[i] * logits_list[i] for i in range(self.num_modalities))
         return fused_logits, per_modality_logits
         
         
@@ -319,27 +319,19 @@ def build_fusion_model(
     num_classes: int,
     **kwargs
 ) -> nn.Module:
-    """
-    Factory function to build fusion models.
-    
-    Args:
-        fusion_type: One of ['early', 'late', 'hybrid']
-        modality_dims: Dictionary mapping modality names to dimensions
-        num_classes: Number of output classes
-        **kwargs: Additional arguments for fusion model
-        
-    Returns:
-        Fusion model instance
-    """
     fusion_classes = {
         'early': EarlyFusion,
         'late': LateFusion,
         'hybrid': HybridFusion,
     }
-    
-    
+
+    if fusion_type not in fusion_classes:
+        raise ValueError(f"Unknown fusion type: {fusion_type}")
+
     if fusion_type != 'hybrid':
-        kwargs.pop('num_heads', None)  # <-- Add 4 spaces (or 1 tab) here for indentation
+        for k in ('num_heads', 'qkv_dim', 'attn_dropout'):
+            kwargs.pop(k, None)
+
     return fusion_classes[fusion_type](
         modality_dims=modality_dims,
         num_classes=num_classes,
@@ -349,12 +341,13 @@ def build_fusion_model(
 
 
 
+
 if __name__ == '__main__':
     # Simple test to verify implementation
     print("Testing fusion architectures...")
     
     # Test configuration
-    modality_dims = {'video': 512, 'imu': 64}
+    modality_dims = {'video': 512, 'imu': 64}  # <-- remove the dot
     num_classes = 11
     batch_size = 4
     

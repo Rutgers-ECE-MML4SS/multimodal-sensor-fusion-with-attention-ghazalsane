@@ -116,7 +116,8 @@ class LateFusion(nn.Module):
         hidden_dim: int = 256,
         num_classes: int = 11,
         dropout: float = 0.1,
-        **kwargs,
+        num_heads: int | None = None,   # <-- accept & ignore
+        **kwargs,                       # <-- future-proof
     ):
         """
         Args:
@@ -338,14 +339,15 @@ def build_fusion_model(
     
     if fusion_type not in fusion_classes:
         raise ValueError(f"Unknown fusion type: {fusion_type}")
+    if fusion_type != 'hybrid':
+        kwargs.pop('num_heads', None)
     
     return fusion_classes[fusion_type](
         modality_dims=modality_dims,
         num_classes=num_classes,
         **kwargs
     )
-if fusion_type != 'hybrid':
-        kwargs.pop('num_heads', None)
+
 
 
 

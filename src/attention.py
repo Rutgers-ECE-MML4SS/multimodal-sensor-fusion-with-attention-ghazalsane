@@ -11,6 +11,86 @@ import torch.nn as nn
 from typing import Optional, Tuple
 import torch.nn.functional as F
 
+# --- NEW: Self-attention over modalities (sequence length = #modalities) ---
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple
+
+class ModalitySelfAttention(nn.Module):
+    def __init__(self, hidden_dim: int = 256, num_heads: int = 4, dropout: float = 0.1, ffn_mult: int = 2):
+        super().__init__()
+        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Projections
+        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+
+        # Transformer encoder-like structure (PreNorm)
+        self.ln1 = nn.LayerNorm(hidden_dim)
+        self.ln2 = nn.LayerNorm(hidden_dim)
+
+        self.dropout = nn.Dropout(dropout)
+
+        # Tiny FFN
+        ffn_hidden = hidden_dim * ffn_mult
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, ffn_hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ffn_hidden, hidden_dim),
+            nn.Dropout(dropout),
+        )
+
+    def _mha(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        x: (B, M, H)
+        mask: Optional (B, M) with 1 for present modality, 0 for missing
+        """
+        B, M, H = x.shape
+        q = self.q_proj(x).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,hd)
+        k = self.k_proj(x).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,hd)
+        v = self.v_proj(x).view(B, M, self.num_heads, self.head_dim).transpose(1, 2)  # (B,H,M,hd)
+
+        # Attention logits
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # (B,H,M,M)
+
+        if mask is not None:
+            # mask_qk: (B,1,M,1) * (B,1,1,M) → (B,1,M,M)
+            mask_q = mask[:, None, :, None]  # queries
+            mask_k = mask[:, None, None, :]  # keys
+            valid = (mask_q & mask_k).to(attn.dtype)
+            attn = attn.masked_fill(valid == 0, float("-inf"))
+
+        attn_w = F.softmax(attn, dim=-1)
+        attn_w = self.dropout(attn_w)
+        out = torch.matmul(attn_w, v)  # (B,H,M,hd)
+        out = out.transpose(1, 2).contiguous().view(B, M, H)  # (B,M,H)
+        out = self.out_proj(out)  # (B,M,H)
+        return out, attn_w
+
+    def forward(self, tokens: torch.Tensor, modality_mask: Optional[torch.Tensor] = None):
+        """
+        tokens: (B, M, H)   (one token per modality)
+        modality_mask: (B, M) with 1 for present, 0 for missing
+        """
+        # Block 1: MHA with PreNorm + residual
+        y, attn_w = self._mha(self.ln1(tokens), modality_mask)
+        tokens = tokens + self.dropout(y)
+
+        # Block 2: FFN with PreNorm + residual
+        y = self.ffn(self.ln2(tokens))
+        tokens = tokens + y
+
+        return tokens, attn_w  # tokens: (B,M,H), attn_w: (B,H,M,M)
+
+
 
 
 class CrossModalAttention(nn.Module):

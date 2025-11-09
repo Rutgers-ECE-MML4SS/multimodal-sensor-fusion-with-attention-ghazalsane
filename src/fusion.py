@@ -344,6 +344,9 @@ def build_fusion_model(
         num_classes=num_classes,
         **kwargs
     )
+if fusion_type != 'hybrid':
+        kwargs.pop('num_heads', None)
+
 
 
 if __name__ == '__main__':

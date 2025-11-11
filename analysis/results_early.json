@@ -1,0 +1,103 @@
+{
+  "best_model_path": "/content/drive/MyDrive/a2_runs/a2_early_pamap2_cnn/checkpoints/epoch=2-val/loss=2.3746-v1.ckpt",
+  "best_val_loss": 2.3746376037597656,
+  "config": {
+    "dataset": {
+      "name": "pamap2",
+      "data_dir": "/content/pamap2",
+      "modalities": [
+        "imu_hand",
+        "imu_chest",
+        "imu_ankle",
+        "heart_rate"
+      ],
+      "num_classes": 18,
+      "train_split": 0.7,
+      "val_split": 0.15,
+      "test_split": 0.15,
+      "batch_size": 64,
+      "num_workers": 2
+    },
+    "model": {
+      "fusion_type": "early",
+      "hidden_dim": 64,
+      "output_dim": 32,
+      "num_heads": 4,
+      "dropout": 0.1,
+      "encoders": {
+        "video": {
+          "type": "frame",
+          "input_dim": 512,
+          "temporal_pooling": "attention"
+        },
+        "imu": {
+          "type": "sequence",
+          "input_dim": 64,
+          "encoder_type": "lstm",
+          "num_layers": 2
+        },
+        "imu_hand": {
+          "encoder_type": "cnn",
+          "input_dim": 17
+        },
+        "imu_chest": {
+          "encoder_type": "cnn",
+          "input_dim": 17
+        },
+        "imu_ankle": {
+          "encoder_type": "cnn",
+          "input_dim": 17
+        },
+        "heart_rate": {
+          "encoder_type": "cnn",
+          "input_dim": 1
+        }
+      }
+    },
+    "training": {
+      "max_epochs": 50,
+      "learning_rate": 0.003,
+      "weight_decay": 0.0001,
+      "optimizer": "adamw",
+      "scheduler": "cosine",
+      "warmup_epochs": 5,
+      "gradient_clip_norm": 1.0,
+      "early_stopping_patience": 10,
+      "augmentation": {
+        "temporal_jitter": 0.1,
+        "gaussian_noise": 0.05,
+        "modality_dropout": 0.1
+      }
+    },
+    "evaluation": {
+      "metrics": [
+        "accuracy",
+        "f1_macro",
+        "ece",
+        "nll"
+      ],
+      "missing_modality_test": false,
+      "uncertainty_analysis": false,
+      "num_calibration_bins": 15
+    },
+    "uncertainty": {
+      "method": "dropout",
+      "num_mc_samples": 1,
+      "temperature_scaling": true
+    },
+    "experiment": {
+      "name": "a2_early_pamap2_cnn",
+      "save_dir": "/content/drive/MyDrive/a2_runs",
+      "log_every_n_steps": 200,
+      "save_top_k": 1
+    },
+    "outputs": {
+      "experiments_dir": "./experiments",
+      "analysis_dir": "./analysis",
+      "report_path": "./report.pdf"
+    },
+    "seed": 42,
+    "device": "cpu",
+    "mixed_precision": false
+  }
+}
